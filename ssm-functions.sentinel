@@ -1,0 +1,95 @@
+import "context"
+import "logging"
+import "strings"
+import "util"
+
+log = logging.get_logger("ssm-functions")
+
+/*
+ Function which validates required tags whose values are dynamically assigned from SSM parameter outputs
+*/
+validate_ssm_parameters = func(aws_resources, tag_key, parameter_name) {
+
+	# default to rule failure
+	is_valid = false
+	ssm_parameter = find_ssm_parameters(parameter_name)
+
+	if length(ssm_parameter) is 0 {
+
+		log.error(parameter_name + "Could not be retrieved from SSM")
+
+	} else {
+
+		ssm_parameter_values = util.map(ssm_parameter, func(key) {
+			return key.value
+		})
+
+		empty = any ssm_parameter_values as val {
+			val == ""
+		}
+
+		if not empty {
+
+			is_valid = all aws_resources as addr, rez {
+				validate_required_tag_ssm(rez, tag_key, ssm_parameter_values)
+			}
+
+		} else {
+
+			log.error("Tag found associated with empty SSM parameter: " + tag_key)
+			log.error("Parameter: " + parameter_name)
+			resources_with_empty_ssm_tags = filter aws_resources as _, rez {
+				tag_key in rez.values.tags
+			}
+
+			if length(resources_with_empty_ssm_tags) > 0 {
+
+				resource_addrs = util.map(resources_with_empty_ssm_tags, func(rez) {
+					return rez.address
+				})
+
+				log.show("Associated resources: ", resource_addrs)
+			}
+		}
+
+	}
+	return is_valid
+}
+
+validate_required_tag_ssm = func(aws_resource, tag_key, tag_values) {
+
+	allowed_values = strings.join(tag_values, "")
+	return log.assert(
+		(aws_resource.values.tags else "") != "",
+		"AWS Resource " + aws_resource.address + " has no tags associated with it",
+	) and
+		log.assert(
+			(tag_key else "") in aws_resource.values.tags,
+			"AWS Resource " + aws_resource.address + " does not include required tag " + tag_key,
+		) and
+		log.assert(
+			(aws_resource.values.tags[tag_key] else "") in tag_values,
+			"AWS Resource " + aws_resource.address + " contained incorrect tag value " + aws_resource.values.tags[tag_key] + " for required tag " + tag_key + ", should be " + allowed_values,
+		)
+}
+
+// Fetch all parameters in all regions/accounts that match provided partial regex
+_param_cache = {}
+find_ssm_parameters = func(re) {
+	if (re in _param_cache) {
+		return _param_cache[re]
+	}
+
+	result = []
+	for context.ssm_parameters as accout_id, account {
+		for account as region_id, region {
+			for region as name, value {
+				if (name matches re) {
+					append(result, value)
+				}
+			}
+		}
+	}
+	_param_cache[re] = result
+	return result
+}

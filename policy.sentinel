@@ -1,0 +1,49 @@
+import "tfplan/v2" as tfplan
+import "logging"
+import "ssm-functions" as ssm
+
+log = logging.get_logger("aws-bl-004")
+
+all_aws_resources = filter tfplan.resource_changes as addr, rc {
+	(rc.provider_name is "registry.terraform.io/hashicorp/aws" or rc.provider_name is "aws") and
+		rc.type not in [
+			"aws_autoscaling_group",
+			"aws_route53_record",
+			"aws_ecr_repository_policy",
+			"aws_ecr_lifecycle_policy",
+			"aws_lb_listener",
+			"aws_lb_listener_rule",
+			"aws_glue_catalog_database",
+			"aws_glue_catalog_table",
+			"aws_glue_security_configuration",
+			"aws_secretsmanager_secret_version",
+			"aws_cloudwatch_log_stream",
+			"aws_sqs_queue_policy",
+			"aws_appautoscaling_policy",
+			"aws_appautoscaling_target",
+			"aws_dynamodb_table_item",
+			"aws_sns_topic_policy",
+			"aws_db_instance_role_association",
+			"aws_rds_cluster_role_association",
+			"aws_rds_global_cluster",
+			"aws_redshift_snapshot_schedule_association",
+		] and
+		rc.mode is "managed"
+}
+
+required_ssm_tags_map = {
+	"Lifecycle": "/global/Lifecycle",
+}
+
+ssm_tags_valid = rule when length(all_aws_resources) > 0 {
+	all required_ssm_tags_map as tag_key, parameter_name {
+		log.assert(
+			ssm.validate_ssm_parameters(all_aws_resources, tag_key, parameter_name),
+			"The SSM tags are invalid",
+		)
+	}
+}
+
+main = rule {
+	ssm_tags_valid
+}
